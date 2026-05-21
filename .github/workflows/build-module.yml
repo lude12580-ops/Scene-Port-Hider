@@ -1,0 +1,83 @@
+name: Build KernelSU module
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: "Create a GitHub Release after building"
+        required: true
+        type: boolean
+        default: false
+      release_tag:
+        description: "Release tag to create when create_release is true"
+        required: false
+        type: string
+        default: "v2.0.1"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install host tools
+        run: |
+          sudo apt update
+          sudo apt install -y curl unzip make git clang llvm lld tar xxd zip pkg-config autoconf automake libtool bzip2 xz-utils
+
+      - name: Install bpftool
+        run: |
+          BPFTOOL_VERSION="v7.7.0"
+          curl -fL --retry 3 \
+            "https://github.com/libbpf/bpftool/releases/download/${BPFTOOL_VERSION}/bpftool-${BPFTOOL_VERSION}-amd64.tar.gz" \
+            -o "$RUNNER_TEMP/bpftool.tar.gz"
+          mkdir -p "$RUNNER_TEMP/bpftool"
+          tar -xzf "$RUNNER_TEMP/bpftool.tar.gz" -C "$RUNNER_TEMP/bpftool"
+          BPFTOOL_PATH="$(find "$RUNNER_TEMP/bpftool" -type f -name bpftool | head -n 1)"
+          chmod +x "$BPFTOOL_PATH"
+          echo "BPFTOOL=$BPFTOOL_PATH" >> "$GITHUB_ENV"
+          "$BPFTOOL_PATH" version
+
+      - name: Cache Android arm64 dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/hideport-deps
+          key: hideport-deps-r25c-${{ runner.os }}-${{ hashFiles('build_deps_android.sh') }}
+
+      - name: Build module from BTF
+        run: |
+          bash tools/build_from_btf.sh
+
+      - name: Stage module zip
+        run: |
+          cp ../hideSceneport_module.zip ./hideSceneport_module.zip
+          ls -lh ./hideSceneport_module.zip
+
+      - name: Upload module zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ScenePortHider_Release
+          path: hideSceneport_module.zip
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: ${{ startsWith(github.ref, 'refs/tags/') || inputs.create_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          name: Scene Port Hider by eBPF ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          body: |
+            KernelSU module built by GitHub Actions.
+
+            This package is tied to the target kernel BTF committed in this repository.
+            For other devices or kernels, fork the repository and rebuild with that device's BTF.
+          files: hideSceneport_module.zip
